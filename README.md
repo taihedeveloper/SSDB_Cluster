@@ -36,6 +36,9 @@ A quick checklist:
 
 + Fast.
 + Lightweight.
++ Fail over.
++ Scalable.
++ Hashslot dispatch, f(key) -> slot -> node.
 + Maintains persistent server connections.
 + Keeps connection count on the backend caching servers low.
 + Enables pipelining of requests and responses.
