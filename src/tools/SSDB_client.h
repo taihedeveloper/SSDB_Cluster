@@ -242,6 +242,18 @@ public:
 	virtual Status slot_postimporting(const std::string &slot) = 0;
 
 	/// @}
+
+	/**
+	 *
+	 */
+
+    virtual Status change_master_to(const std::string &master_ip,int64_t port, int64_t last_seq, const std::string &last_key, std::vector<std::string> *ret) = 0;
+    virtual Status show_slave_status(std::vector<std::string> *ret) = 0;
+    virtual Status start_slave() = 0;
+    virtual Status stop_slave()  = 0;
+    virtual Status unlock_db()   = 0;
+
+
 	virtual Status qpush(const std::string &name, const std::string &item, int64_t *ret_size=NULL) = 0;
 	virtual Status qpush(const std::string &name, const std::vector<std::string> &items, int64_t *ret_size=NULL) = 0;
 	virtual Status qpop(const std::string &name, std::string *ret) = 0;

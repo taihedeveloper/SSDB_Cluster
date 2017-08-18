@@ -2,7 +2,7 @@
 #define SSDB_API_IMPL_CPP
 
 #include "SSDB_client.h"
-#include "net/link.h"
+#include "link.h"
 
 namespace ssdb{
 
@@ -96,6 +96,12 @@ public:
 	virtual Status slot_postmigrating(const std::string &slot);
 	virtual Status slot_preimporting(const std::string &slot);
 	virtual Status slot_postimporting(const std::string &slot);
+
+	virtual Status change_master_to( const std::string &master_ip, int64_t port, int64_t last_seq, const std::string &last_key, std::vector<std::string> *ret);
+    virtual Status show_slave_status(std::vector<std::string> *ret);
+    virtual Status start_slave();
+    virtual Status stop_slave();
+    virtual Status unlock_db();
 
 	virtual Status qpush(const std::string &name, const std::string &item, int64_t *ret_size=NULL);
 	virtual Status qpush(const std::string &name, const std::vector<std::string> &items, int64_t *ret_size=NULL);

@@ -1,5 +1,5 @@
 #include "SSDB_impl.h"
-#include "util/strings.h"
+#include "strings.h"
 #include <signal.h>
 
 namespace ssdb{
@@ -554,6 +554,41 @@ Status ClientImpl::slot_postimporting(const std::string &slot){
 	resp = this->request("slot_postimporting", slot);
 	Status s(resp);
 	return s;
+}
+
+
+Status ClientImpl::change_master_to(const std::string &master_ip,
+            int64_t port, int64_t last_seq, const std::string &last_key, std::vector<std::string> *ret) {
+    const std::vector<std::string> *resp;
+    resp = this->request("change_master_to",  master_ip, str(port), str(last_seq), last_key);
+    return _read_list(resp, ret);
+}
+
+Status ClientImpl::show_slave_status(std::vector<std::string> *ret) {
+    const std::vector<std::string> *resp;
+    resp = this->request("show_slave_status");
+    return _read_list(resp, ret);
+}
+
+Status ClientImpl::start_slave() {
+    const std::vector<std::string> *resp;
+    resp = this->request("start_slave");
+    Status s(resp);
+    return s;
+}
+
+Status ClientImpl::stop_slave() {
+    const std::vector<std::string> *resp;
+    resp = this->request("stop_slave");
+    Status s(resp);
+    return s;
+}
+
+Status ClientImpl::unlock_db() {
+    const std::vector<std::string> *resp;
+    resp = this->request("unlock_db");
+    Status s(resp);
+    return s;
 }
 
 Status ClientImpl::qpush(const std::string &name, const std::string &item, int64_t *ret_size){

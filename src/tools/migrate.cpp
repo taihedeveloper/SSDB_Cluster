@@ -49,7 +49,21 @@ static struct option long_options[] = {
 static char short_options[] = "daAom:b:s:h:p:z:";
 void 
 help(void){
-	printf("args is wrong!\nExamples:\n\tmigrate slots Ip Port zkip zkport\n");
+	log_stderr(
+        "Usage: migrate    [-?ad] [-m masterhost]" CRLF
+        "                  [-b backupnode] [-z zookeeper host]" CRLF
+        "                  [-s slots] [-p ssdb port] [-h ssdb ip]" CRLF
+        "                    " CRLF
+        "");
+	log_stderr(
+        "Options:" CRLF
+        "  -d, --daemonize        : run as a daemon" CRLF
+        "  -a, --add              : add node");
+	log_stderr(
+		"Examples:" CRLF
+		"	migrate slots: migrate -s 1,2,3 -h 127.0.0.1 -p 8888 -z 127.0.0.1:1010" CRLF
+		//"	add node: migrate -a -m 127.0.0.1:0001 -b 127.0.0.1:0002 -z 127.0.0.1:1010" CRLF
+		"");
 	return ;
 }
 int 
@@ -181,20 +195,26 @@ int get_options(int argc, char **argv, struct OBJ *migrate){
 	}
    return 0;
 }
-bool 
-migarte_status(const zhandle_t *zh_handler, int nodes_num, const char *status, const char *slots){
+void 
+migarte_status(const zhandle_t *zh_handler, int nodes_num, const char *status,const std::vector<std::string> &vecSlots){
 	zhandle_t * zk_handler = (zhandle_t *)zh_handler;
 	char zk_path[128] = {0};
 	char data[256] = {0};
-	sprintf(zk_path, "/migrating/%d", nodes_num);
-	sprintf(data,"{\"node_index\":%d, \"slots\":%s, \"migrating\":\"true\"}",nodes_num, slots, status);
-	int ret = zk_set(zk_handler, zk_path, data);
-	if (!ret)
+	int count = vecSlots.size();
+	for (int i = 0; i < count;i++)
 	{
-		printf("zk_set fail .\n");
-		return false;
+		memset(zk_path, 0x00, sizeof(zk_path));
+		memset(data, 0x00, sizeof(data));
+		sprintf(zk_path, "/migrate_tasks/%s", vecSlots[i].c_str());
+		sprintf(data,"{\"node_index\":%d, \"slots\":%s, \"migrating\":\"true\"}",nodes_num, vecSlots[i].c_str(), status);
+		int ret = zk_create(zk_handler, zk_path, data);
+		if (ret)
+		{
+			_log_stderr("zk_create %s fail .\n",zk_path);
+			continue;
+		}
 	}
-	return true;
+	return ;
 }
 
 int 
@@ -208,21 +228,22 @@ add_node(const zhandle_t *zh_handler, const char *masternode, const char *backup
 		struct String_vector strings;
 	    int child_ret = zk_get_children(zk_handler, "/nodes", NULL, NULL, &strings);
 	    if (child_ret) {
-	    	log_error("get children fail.\n");
-	        exit(0);
+	    	log_error("get /nodes children fail.\n");
+	        return -1;
 	    }
 	    //添加排序
 	    qsort(strings.data, strings.count, sizeof(char *), comp);
 	    int nodes_num = strings.count;
 	    //查找节点
-	    for (int i = 1; i <= nodes_num; ++i)
+	    for (int i = 0; i < nodes_num; ++i)
 	    {
 	    	char data[512] ={0};
 	    	int datalen = sizeof(data);
 	    	char zk_path[256] = {0};
 
-            sprintf(zk_path, "/nodes/%d", i );
+            sprintf(zk_path, "/nodes/%s", strings.data[i] );
             int ret = zk_get(zk_handler, ((const char *)zk_path), NULL, NULL, data, &datalen);
+            //printf("ret:::::::::::::::::%d\n",ret );
             if (!ret) {
             	//printf(" data:%s\n",data);
                 //解析data获取ip&端口
@@ -234,10 +255,10 @@ add_node(const zhandle_t *zh_handler, const char *masternode, const char *backup
                 JSON_GET_INT32(json_data, "port", &server_port, 0);
                 //printf(" port:%d, server_port:%d, ip:%s ,server_ip:%s\n",port, server_port, ip, server_ip);
                 if ( port == server_port && strcmp(server_ip, ip)==0 )
-                	return i;
+                	return atoi(strings.data[i]);
             }
             else {
-            	printf("zk_get fail\n");
+            	log_error("zk_get fail\n");
             	return -1;
             }
 	    }
@@ -278,8 +299,6 @@ int main(int argc, char  **argv)
 		help();
 		exit(0);
 	}
-	// _log_stderr("This is migrate." );
-
     int status = log_init(5, (char *)"./migrate.log");
     if (status != 0) {
     	log_warn("init log fail.");
@@ -291,10 +310,7 @@ int main(int argc, char  **argv)
 	}
 	const char *slots = migrate.slots; // argv[1];
 	const char *ip =  migrate.ssdb_ip;//argv[2];
-	int port =  migrate.ssdb_port;//atoi(argv[3]);
-	//const char *zk_ip = argv[4];
-	//int zk_port = atoi(argv[5]);
-	
+	int port =  migrate.ssdb_port;//atoi(argv[3]);	
 	// 连接 zk
 	char host[128];
     zhandle_t *zh_handler = zk_init(migrate.zk_host, NULL, 30000, NULL); // 需改
@@ -302,7 +318,7 @@ int main(int argc, char  **argv)
         log_error("connect to zk fail.");
         exit(0);
     }
-    printf("connect to zk success.");
+    _log_stderr("connect to zk success.\n");
  	if (migrate.masternode == NULL) sprintf(host,"%s:%d",ip, port);
     else strcpy(host,migrate.masternode);
     //
@@ -314,13 +330,16 @@ int main(int argc, char  **argv)
     }
     if ( migrate.add_node )
     {
-    	printf("add node success,nodes_num:%d\n",nodes_num);
+    	_log_stderr("add node success,nodes_num:%d\n",nodes_num);
     	exit(0);
     }
-    printf("nodes_num:%d",nodes_num );
-    migarte_status(zh_handler, nodes_num, "true",  slots);
+    _log_stderr("nodes_num:%d\n",nodes_num );
+    
+
+
     std::vector<std::string> vecSlots;
 	split(slots, (char *)',',  vecSlots);
+	migarte_status(zh_handler, nodes_num, "true",  vecSlots);
     char data[1024];
     int datalen = sizeof(data);
     char zk_path[50];
@@ -331,7 +350,7 @@ int main(int argc, char  **argv)
 		log_error("fail to connect to server. ip:%s , port:%d",ip, port);
 		return 0;
 	}
-	printf("connect to dest_server success.\n");
+	_log_stderr("connect to dest_server success.\n");
 	std::map<char *, ssdb::Client *> mapServerPool;
 	for (std::vector<std::string>::iterator it = vecSlots.begin() ; it != vecSlots.end(); it++ )
 	{
@@ -348,22 +367,21 @@ int main(int argc, char  **argv)
             int get_ret = zk_get(zh_handler, (zk_path), NULL, NULL, data, &datalen);
             if (!get_ret) {
                 //解析data 获取nodes index
-                _log_stderr("data:%s\n",data );
-                //strcpy(slot_map,)
+                //_log_stderr("data:%s\n",data );
                 json_object *json_data = json_tokener_parse(data);
                 JSON_GET_INT32(json_data, "node_index", &node_index, 0);
-                _log_stderr("0node_index:%d\n", node_index);
             } 
             else {
             	log_error("get slot_map fail,zk_path:%s .", zk_path);
             	continue;
             	//获取失败
             }
-            if(node_index <= 0 )
+            if(node_index < 0 )
             {
             	log_error("get node_index fail ,node_index:%d .", node_index);
             	continue;
             }
+
             _log_stderr("node_index:%d\n", node_index);
             //根据index获取node信息
             datalen = sizeof(data);
@@ -373,7 +391,7 @@ int main(int argc, char  **argv)
             get_ret = zk_get(zh_handler, ((const char *)zk_path), NULL, NULL, data, &datalen);
             if (!get_ret) {
                 //解析data获取ip&端口
-                printf("data:%s\n",data );
+                //printf("data:%s\n",data );
                 char server_ip[64] = {0};
                 const char *tmp_ip=NULL;
                 json_object *json_data = json_tokener_parse(data);
@@ -397,32 +415,32 @@ int main(int argc, char  **argv)
 			ssdb::Status s;
 			s = iter->second->slot_premigrating(*it);
 			if(s.ok()){
-				printf("ssdb slot_premigrating cmd ok!\n");
+				_log_stderr("ssdb slot_premigrating cmd ok!\n");
 			}else{
 				log_error("slot_premigrating error!\n");
-            	continue;
+            	//continue;
 			}
 			s= dest_client->slot_preimporting(*it);
 			if(s.ok()){
-				printf("ssdb slot_preimporting cmd ok!\n");
+				_log_stderr("ssdb slot_preimporting cmd ok!\n");
 			}else{
 				log_error("slot_preimporting error!\n");
-            	continue;
+            	//continue;
 			}
 
 			s = iter->second->migrate_slot(*it, ip, port, TIMEOUT, SPEED);
 			if(s.ok()){
-				printf("ssdb migrate_slot cmd ok!\n");
+				_log_stderr("ssdb migrate_slot cmd ok!\n");
 			}else{
 				log_error("migrate_slot error!\n");
-            	continue;
+            	//continue;
 			}
 			s = iter->second->slot_postmigrating(*it);
 			if(s.ok()){
-				printf("ssdb slot_postmigrating cmd ok!\n");
+				_log_stderr("ssdb slot_postmigrating cmd ok!\n");
 			}else{
 				log_error("slot_postmigrating error!\n");
-            	continue;
+            	//continue;
 			}
 
 			s= dest_client->slot_postimporting(*it);
@@ -430,7 +448,7 @@ int main(int argc, char  **argv)
 				printf("ssdb slot_postimporting cmd ok!\n");
 			}else{
 				log_error("slot_postimporting error!\n");
-            	continue;
+            	//continue;
 			}
 		}
 		else 
@@ -438,66 +456,61 @@ int main(int argc, char  **argv)
 			ssdb::Client *client = ssdb::Client::connect(src_ip, src_port);
 			if(client == NULL){
 				log_error("fail to connect to src_server!\n");
-            	continue;
+            	//continue;
 			}
 			ssdb::Status s;
 			s = client->slot_premigrating(*it);
 			if(s.ok()){
-				printf("ssdb slot_premigrating cmd ok!\n");
+				_log_stderr("ssdb slot_premigrating cmd ok!\n");
 			}else{
 				log_error("slot_premigrating error!\n");
-            	continue;
+            	//continue;
 			}
 			s= dest_client->slot_preimporting(*it);
 			if(s.ok()){
-				printf("ssdb slot_preimporting cmd ok!\n");
+				_log_stderr("ssdb slot_preimporting cmd ok!\n");
 			}else{
 				log_error("slot_preimporting error!\n");
-            	continue;
+            	//continue;
 			}
-			//printf("wangchangqing:%s %s %d\n",(*it).c_str(), ip, port );
 			s = client->migrate_slot(*it, ip, port, TIMEOUT, SPEED);
 			if(s.ok()){
-				printf("ssdb migrate_slot cmd ok!\n");
+				_log_stderr("ssdb migrate_slot cmd ok!\n");
 			}else{
-				printf("%s\n",s.code().c_str() );
 				log_error("migrate_slot error!\n");
-            	continue;
+            	//continue;
 			}
 			s = client->slot_postmigrating(*it);
 			if(s.ok()){
-				printf("ssdb slot_postmigrating cmd ok!\n");
+				_log_stderr("ssdb slot_postmigrating cmd ok!\n");
 			}else{
 				log_error("slot_postmigrating error!\n");
-            	continue;
+            	//continue;
 			}
 			s= dest_client->slot_postimporting(*it);
 			if(s.ok()){
-				printf("ssdb slot_postimporting cmd ok!\n");
+				_log_stderr("ssdb slot_postimporting cmd ok!\n");
 			}else{
 				log_error("slot_postimporting error!\n");
-            	continue;
+            	//continue;
 			}
 			mapServerPool[src_ip]=client;
 		}
 		//update zk slot->node 迁移完成修改slot信息
 		memset(data,0x00, sizeof(data));
 		memset(zk_path,0x00, sizeof(pathlen));
-		sprintf(zk_path, "/slot_map/%d", (*it).c_str()  );
+		sprintf(zk_path, "/slot_map/%s", (*it).c_str()  );
+		printf("zk_path: %s\n", zk_path);
 		sprintf(data,"{\"node_index\":%d, \"migrating\":\"false\"}",nodes_num);
-		int ret = zk_set(zh_handler, zk_path, data);
-		if (!ret)
-		{
+		if (zk_set(zh_handler, zk_path, data))
 			log_error("zk_set fail ,zk_path:%s, data:%s",zk_path, data);
-		}
+		memset(zk_path, 0x00, sizeof(zk_path));
+		sprintf(zk_path, "/migrate_tasks/%s", (*it).c_str());
+		if(zk_delete(zh_handler,zk_path))
+			log_error("zk_del fail ,zk_path:%s",zk_path);
 		it=vecSlots.erase(it);
 		it--;
 	}
-	memset(zk_path, 0x00, sizeof(zk_path));
-	sprintf(zk_path, "/migrate/%d", nodes_num);
-	if(!zk_delete(zh_handler,zk_path))
-		log_error("zk_del fail ,zk_path:%s",zk_path);
-
 	std::map<char *, ssdb::Client *>::iterator iter;
 	for (iter = mapServerPool.begin(); iter != mapServerPool.end(); )
 	{
