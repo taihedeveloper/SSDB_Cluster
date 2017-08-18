@@ -20,6 +20,11 @@
 
 #include <stdarg.h>
 #include <json.h>
+#include <dlfcn.h>
+
+typedef int (*lib_ssdb_active_standby_switch_t)(const char* ip, uint16_t port, uint64_t* last_seq);
+typedef int (*lib_ssdb_change_master_to_t)(const char* ip, uint16_t port, uint64_t last_seq, const char* master_ip, uint16_t master_port);
+
 
 #define LF                  (uint8_t) 10
 #define CR                  (uint8_t) 13

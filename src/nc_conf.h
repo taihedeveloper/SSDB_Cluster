@@ -22,6 +22,7 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <yaml.h>
+#include <dlfcn.h>
 
 #include <nc_core.h>
 #include <hashkit/nc_hashkit.h>
@@ -49,6 +50,7 @@
 #define CONF_DEFAULT_REDIS                   false
 #define CONF_DEFAULT_REDIS_DB                0
 #define CONF_DEFAULT_PRECONNECT              false
+#define CONF_DEFAULT_MASTER                  false
 #define CONF_DEFAULT_AUTO_EJECT_HOSTS        false
 #define CONF_DEFAULT_SERVER_RETRY_TIMEOUT    30 * 1000      /* in msec */
 #define CONF_DEFAULT_SERVER_FAILURE_LIMIT    2
@@ -56,6 +58,7 @@
 #define CONF_DEFAULT_KETAMA_PORT             11211
 #define CONF_DEFAULT_TCPKEEPALIVE            false
 #define CONF_DEFAULT_DATA_LENGTH             256
+#define CONF_SSDB_HANDLE_PATH                "./lib/libssdb_handle.so"
 
 struct conf_listen {
     struct string   pname;   /* listen: as "hostname:port" */
@@ -96,6 +99,7 @@ struct conf_pool {
     struct string      redis_auth;            /* redis_auth: redis auth password (matches requirepass on redis) */
     int                redis_db;              /* redis_db: redis db */
     int                preconnect;            /* preconnect: */
+    int                master;                /* master: */
     int                auto_eject_hosts;      /* auto_eject_hosts: */
     int                server_connections;    /* server_connections: */
     int                server_retry_timeout;  /* server_retry_timeout: in msec */

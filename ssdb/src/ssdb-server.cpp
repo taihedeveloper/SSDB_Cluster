@@ -102,6 +102,8 @@ void MyApplication::run(){
 	SSDB_BinLog *binlog = NULL;
 	if (option.binlog) {
 		option.binlog_dir = app_args.work_dir + "/binlog/";
+	    if(access(option.binlog_dir.c_str(), F_OK) != 0)
+	        mkdir(option.binlog_dir.c_str(),S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 		binlog = new SSDB_BinLog(meta_db, option.binlog_dir,
 				option.max_binlog_size, option.sync_binlog, option.purge_logs_span);
 

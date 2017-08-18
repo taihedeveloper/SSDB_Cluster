@@ -17,6 +17,7 @@
 #include "nc_zookeeper.h"
 #include <nc_core.h>
 #include <nc_server.h>
+#include <time.h>
 
 zhandle_t *zk_init(const char *host, watcher_fn init_watcher, int timeout, struct zk_init_ctx *zk_ctx)
 {
@@ -100,7 +101,7 @@ int comp(const void *a, const void *b)
     return atoi(*(char **)a) > atoi(*(char **)b);
 }
 
-bool get_lock(zhandle_t *zh, const char *path, char* node_path)
+bool get_lock(zhandle_t *zh, const char *path, char* node_path, int timeout)
 {
     char total_path[BUFFER_SIZE];
     size_t total_len = sizeof(total_path);
@@ -127,7 +128,17 @@ bool get_lock(zhandle_t *zh, const char *path, char* node_path)
             return false;
         }
 
+        
+        time_t starttime;
+        time(&starttime);
         while (1) {
+            time_t nowtime;
+            time(&nowtime);
+            if (nowtime - starttime >= timeout)
+            {
+                log_error("get lock timeout\n");
+                return false;
+            }
             struct String_vector strings;
             int child_ret = zoo_wget_children(zh, total_path, NULL, NULL, &strings);
             if (child_ret) {

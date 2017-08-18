@@ -47,7 +47,7 @@ int zk_get(zhandle_t *zh, const char *path, watcher_fn watcher, void *watcherCtx
 int zk_set(zhandle_t *zh, const char *path, const char *buffer); // zk设置节点值
 int zk_get_children(zhandle_t *zh, const char *path, watcher_fn watcher, void *watcherCtx, struct String_vector *strings); // zk获取节点的子节点
 int comp(const void *a, const void *b); // 排序规则，用于分布式获取锁
-bool get_lock(zhandle_t *zh, const char *path, char* node_path); // 获取分布式锁
+bool get_lock(zhandle_t *zh, const char *path, char* node_path, int timeout); // 获取分布式锁
 
 #ifdef __cplusplus  
 }  

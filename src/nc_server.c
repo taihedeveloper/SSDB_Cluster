@@ -17,6 +17,7 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/select.h>
 
 #include <nc_core.h>
 #include <nc_server.h>
@@ -200,7 +201,7 @@ server_init(struct array *server, struct array *conf_server,
     ASSERT(nserver != 0);
     ASSERT(array_n(server) == 0);
 
-    status = array_init(server, nserver, sizeof(struct server));
+    status = array_init(server, nserver * 5, sizeof(struct server));
     if (status != NC_OK) {
         return status;
     }
@@ -238,7 +239,7 @@ write_server_init(struct array *server, struct array *conf_server,
     ASSERT(nserver != 0);
     ASSERT(array_n(server) == 0);
 
-    status = array_init(server, nserver, sizeof(struct server));
+    status = array_init(server, nserver * 5, sizeof(struct server));
     if (status != NC_OK) {
         return status;
     }
@@ -274,7 +275,7 @@ backup_server_init(struct array *server, struct array *conf_server,
     ASSERT(nserver != 0);
     ASSERT(array_n(server) == 0);
 
-    status = array_init(server, nserver, sizeof(struct server));
+    status = array_init(server, nserver * 5, sizeof(struct server));
     if (status != NC_OK) {
         return status;
     }
@@ -315,7 +316,7 @@ server_identifier_init(struct array *server, struct array *back_server,
     ASSERT(nbackserver != 0);
     ASSERT(nbackserver == nserver);
 
-    array_init(&sp->server_identifier, nserver, sizeof(uint32_t));
+    array_init(&sp->server_identifier, nserver * 5, sizeof(uint32_t));
 
     for(server_index = 0; server_index < nserver; server_index++) {
         s  = array_get(server, server_index);
@@ -441,9 +442,10 @@ static rstatus_t
 server_each_connected_determine(void *elem, void *data)
 {
     rstatus_t status;
-    struct server *server;
+    struct server *server, *master_server;
     struct server_pool *pool;
     struct conn *conn;
+    uint32_t index;
     int64_t now;                  /* current timestamp in usec */
 
     now = nc_usec_now();
@@ -454,32 +456,56 @@ server_each_connected_determine(void *elem, void *data)
     server = elem;
     pool = server->owner;
 
-    conn = server_conn(server);
-    if (conn == NULL) {
-        return NC_ENOMEM;
-    }
-
     if(server->next_retry > now) {
+        index = array_idx(&pool->backup_server, server);
+        master_server = array_get(&pool->server, index);
 
-        status = server_connect(pool->ctx, server, conn);
+        if (server->ns_conn_q < pool->server_connections) {
+            conn =  conn_get(server, false, (int)pool->protocol);
+            if (conn == NULL) {
+                return NC_ENOMEM;
+            }
+        }else{
+            conn = TAILQ_FIRST(&server->s_conn_q);
+        }
+
+        conn->err = 0;
+        conn->sd  = -1;
+        status = server_connect_determine(pool->ctx, server, conn);
         if (status != NC_OK) {
-            log_warn("connect to server '%.*s' failed, ignored: %s",
-                     server->pname.len, server->pname.data, strerror(errno));
+            log_warn("connect to server '%.*s' failed, ignored: %s, pid:%lu, status:%d",
+                     server->pname.len, server->pname.data, strerror(errno), (uint64_t)pthread_self(), status);
+            server->next_retry = now + pool->server_retry_timeout;
         }else {
             server->next_retry = 0LL;
             log_warn("connect to server '%.*s' success",
                      server->pname.len, server->pname.data);
-            conn->unref(conn);
-
-            status = close(conn->sd);
-            if (status < 0) {
-                log_error("close s %d failed, ignored: %s", conn->sd, strerror(errno));
+            if(pool->master)
+            {
+                if(pool->ssdb_handle) {
+                    lib_ssdb_change_master_to_t change_master_to = (lib_ssdb_active_standby_switch_t)dlsym(pool->ssdb_handle, "change_master_to");
+                    int err_no = change_master_to((const char*)server->addrstr.data, server->port, pool->last_seq,
+                                        (const char *)master_server->addrstr.data, master_server->port);
+                }else{
+                    log_warn("ssdb handle is NULL");
+                    return NC_ERROR;
+                }
             }
-            conn->sd = -1;
+
+            conn->unref(conn);
             conn_put(conn);
+//
+//            if(conn->sd > 0)
+//            {
+//                log_warn("put");
+//                close(conn->sd);
+//                conn->unref(conn);
+//                conn_put(conn);
+//            }else{
+//                log_warn("no put");
+//            }
         }
     }
-
     return NC_OK;
 }
 
@@ -679,6 +705,8 @@ server_close(struct context *ctx, struct conn *conn)
 
     server_failure(ctx, conn->owner);
 
+    struct server * s = (struct server*)conn->owner;
+
     conn->unref(conn);
 
     status = close(conn->sd);
@@ -688,6 +716,10 @@ server_close(struct context *ctx, struct conn *conn)
     conn->sd = -1;
 
     conn_put(conn);
+
+    if(!s->ns_conn_q){
+        server_active_standby_switch(s);
+    }
 }
 
 rstatus_t
@@ -769,6 +801,119 @@ server_connect(struct context *ctx, struct server *server, struct conn *conn)
     return NC_OK;
 
 error:
+    conn->err = errno;
+    return status;
+}
+
+
+rstatus_t
+server_connect_determine(struct context *ctx, struct server *server, struct conn *conn)
+{
+    rstatus_t status;
+    fd_set  readfds, writefds, exfds;
+    struct timeval tv;
+    socklen_t len;
+
+    int fd = 0;
+
+    ASSERT(!conn->client && !conn->proxy);
+
+    if (conn->err) {
+      ASSERT(conn->done && conn->sd < 0);
+      errno = conn->err;
+      return NC_ERROR;
+    }
+
+//    if (conn->sd > 0) {
+//        /* already connected on server connection */
+//        return NC_OK;
+//    }
+
+    log_debug(LOG_VVERB, "connect to server '%.*s'", server->pname.len,
+              server->pname.data);
+
+    //conn->sd = socket(conn->family, SOCK_STREAM, 0);
+    fd = socket(conn->family, SOCK_STREAM, 0);
+
+    if (fd < 0) {
+        log_error("socket for server '%.*s' failed: %s", server->pname.len,
+                  server->pname.data, strerror(errno));
+        status = NC_ERROR;
+        goto error;
+    }
+
+    status = nc_set_nonblocking(fd);
+    if (status != NC_OK) {
+        log_error("set nonblock on s %d for server '%.*s' failed: %s",
+                  conn->sd, server->pname.len, server->pname.data,
+                  strerror(errno));
+        goto error;
+    }
+
+    if (server->pname.data[0] != '/') {
+        status = nc_set_tcpnodelay(fd);
+        if (status != NC_OK) {
+            log_warn("set tcpnodelay on s %d for server '%.*s' failed, ignored: %s",
+                     conn->sd, server->pname.len, server->pname.data,
+                     strerror(errno));
+        }
+    }
+
+
+//    status = event_add_conn(ctx->evb, conn);
+//    if (status != NC_OK) {
+//        log_error("event add conn s %d for server '%.*s' failed: %s",
+//                  conn->sd, server->pname.len, server->pname.data,
+//                  strerror(errno));
+//        goto error;
+//    }
+
+
+    ASSERT(!conn->connecting && !conn->connected);
+    status = connect(fd, conn->addr, conn->addrlen);
+    if (status != NC_OK) {
+        if (errno == EINPROGRESS) {
+//            conn->connecting = 1;
+//            log_debug(LOG_DEBUG, "connecting on s %d to server '%.*s'",
+//                      conn->sd, server->pname.len, server->pname.data);
+            FD_ZERO(&readfds);
+            FD_ZERO(&writefds);
+            FD_ZERO(&exfds);
+            FD_SET(fd, &readfds);
+            FD_SET(fd, &writefds);
+            FD_SET(fd, &exfds);
+            tv.tv_sec  = 1;
+            tv.tv_usec = 0;
+            int ret = select(fd + 1, &readfds, &writefds, &exfds, &tv);
+            if(ret <= 0){
+                log_error("connect on s %d to server '%.*s' failed: %s", conn->sd,
+                          server->pname.len, server->pname.data, strerror(errno));
+                status = NC_ERROR;
+                goto error;
+            }else{
+                status = getpeername(fd, conn->addr, &conn->addrlen);
+                if (status != NC_OK) {
+                    goto error;
+                }
+                return NC_OK;
+            }
+        }
+
+        log_error("connect on s %d to server '%.*s' failed: %s", conn->sd,
+                  server->pname.len, server->pname.data, strerror(errno));
+
+        goto error;
+    }
+
+    ASSERT(!conn->connecting);
+    conn->connected = 1;
+    log_debug(LOG_INFO, "connected on s %d to server '%.*s'", conn->sd,
+              server->pname.len, server->pname.data);
+    close(fd);
+    return NC_OK;
+
+error:
+    close(fd);
     conn->err = errno;
     return status;
 }
@@ -933,6 +1078,13 @@ server_pool_server(struct server_pool *pool, uint8_t *key, uint32_t keylen, int 
     uint32_t idx;
 
     idx = server_pool_idx(pool, key, keylen);
+
+    int server_count = array_n(&pool->server);
+    if(server_count <= idx) {
+        log_warn("The number of server in the container %"PRIu32" is smaller than the index value:"
+                "%"PRIu32"",server_count, idx);
+        return NULL;
+    }
 	
 	if (1 == pool_write)
 	{
@@ -992,7 +1144,7 @@ done:
 			  
 	if (server)
 	{
-		printf("%.*s selected, idx:%d,write:%d\n", server->pname.len, server->pname.data, idx, pool_write);
+		printf("%.*s selected, idx:%d,write:%d, pid:%lu\n", server->pname.len, server->pname.data, idx, pool_write, (uint64_t)pthread_self());
 	}
 
     return server;
@@ -1244,6 +1396,9 @@ server_pool_deinit(struct array *server_pool)
         if(array_n(&sp->server_identifier) == array_n(&sp->server)){
             server_deinit(&sp->server_identifier);
         }
+        if(sp->ssdb_handle){
+            dlclose(sp->ssdb_handle);
+        }
 
         log_debug(LOG_DEBUG, "deinit pool %"PRIu32" '%.*s'", sp->idx,
                   sp->name.len, sp->name.data);
@@ -1253,3 +1408,84 @@ server_pool_deinit(struct array *server_pool)
 
     log_debug(LOG_DEBUG, "deinit %"PRIu32" pools", npool);
 }
+
+rstatus_t
+server_active_standby_switch(struct server *server)
+{
+    struct server *backup_server, tmp_server;
+    int64_t now;                  /* current timestamp in usec */
+    struct server_pool *pool;     /* server pool */
+    uint32_t server_index;        /* server index */
+    char zk_path[64];
+    char back_ip_str[128], server_ip_str[128];
+    char zk_set_str[256];
+
+    now = nc_usec_now();
+    if (now < 0) {
+        return NC_ERROR;
+    }
+
+    pool = server->owner;
+
+    if(server->next_retry > now) {
+
+        server_index = array_idx(&pool->server, server);
+        backup_server = array_get(&pool->backup_server, server_index);
+
+        struct String_vector strings;
+        int child_ret = zk_get_children(pool->zh_handler, "/nodes", NULL, NULL, &strings);
+        if (child_ret) {
+            return NC_ERROR;
+        } else {
+            qsort(strings.data, (size_t)strings.count, sizeof(char *), comp);
+        }
+//        tmp_server = backup_server;
+//        backup_server = server;
+//        server = tmp_server;
+        memcpy(&tmp_server, backup_server, sizeof(struct server));
+        memcpy(backup_server, server, sizeof(struct server));
+        memcpy(server, &tmp_server, sizeof(struct server));
+
+        TAILQ_INIT(&server->s_conn_q);
+        TAILQ_INIT(&backup_server->s_conn_q);
+
+        if(!pool->master)
+        {
+            log_warn("not master return");
+            return NC_OK;
+        }
+
+        if(pool->ssdb_handle) {
+            lib_ssdb_active_standby_switch_t active_standby_switch = (lib_ssdb_active_standby_switch_t)dlsym(pool->ssdb_handle, "active_standby_switch");
+            int err_no = active_standby_switch((const char*)server->addrstr.data, server->port, &pool->last_seq);
+            log_warn("switch between master and slave machines, error_code %d, now master:pool "
+                    "%"PRIu32" '%.*s' server address:%.*s:%u, last_seq %lu",err_no, pool->idx,
+                    pool->name.len, pool->name.data, server->addrstr.len, server->addrstr.data, server->port, pool->last_seq);
+
+        }else{
+            log_warn("ssdb handle is NULL");
+            return NC_ERROR;
+        }
+
+        struct string back_ip, server_ip;
+        uint16_t back_port, server_port;
+        back_ip = backup_server->addrstr;
+        server_ip = server->addrstr;
+        back_port = backup_server->port;
+        server_port = server->port;
+        memset(back_ip_str, 0, sizeof(back_ip_str));
+        memset(server_ip_str, 0, sizeof(server_ip_str));
+        strncpy(back_ip_str, back_ip.data, back_ip.len);
+        strncpy(server_ip_str, server_ip.data, server_ip.len);
+        memset(zk_set_str, 0, sizeof(zk_set_str));
+        memset(zk_path, 0, sizeof(zk_path));
+        sprintf(zk_set_str, "{\"status\":0,\"ip\":\"%s\",\"port\":%d,\"slave_ip\":\"%s\",\"slave_port\":%d}", server_ip_str, server_port, back_ip_str, back_port);
+        sprintf(zk_path, "/nodes/%s", strings.data[server_index]);
+        int set_ret = zk_set(pool->zh_handler, zk_path, zk_set_str);
+        if (set_ret) {
+            return NC_ERROR;
+        }
+    }
+    return NC_OK;
+}
+

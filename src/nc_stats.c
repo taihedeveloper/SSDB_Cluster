@@ -884,6 +884,8 @@ stats_stop_aggregator(struct stats *st)
     }
 
     close(st->sd);
+
+    pthread_cancel(st->tid);
 }
 
 struct stats *

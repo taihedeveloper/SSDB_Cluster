@@ -22,7 +22,7 @@
 #include <nc_server.h>
 #include <nc_proxy.h>
 
-#define MAX_CHECKED_TIME_INTERVAL 5000 /*msec*/
+#define MAX_CHECKED_TIME_INTERVAL 2000 /*msec*/
 
 static uint32_t ctx_id; /* context generation */
 static int64_t  last_checked_time = 0LL; /*last call server_pool_connected_determine*/

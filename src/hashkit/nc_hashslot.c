@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <dlfcn.h>
 
 #include <nc_core.h>
 #include <nc_server.h>
@@ -29,6 +30,7 @@
 void hashslot_get_watch(zhandle_t *zh, int type, int state, const char *path,
         void *watcherCtx)
 {
+    log_debug(LOG_DEBUG, "call hashslot_get_watch");
     if (type == ZOO_CHANGED_EVENT || type == ZOO_DELETED_EVENT) {
         struct slot_ctx *ctx_temp = (struct slot_ctx *)watcherCtx;
         int slot_index = ctx_temp->slot_index;
@@ -111,12 +113,14 @@ hashslot_init(struct server_pool *pool, uint32_t nserver){
             int get_ret = zk_get(pool->zh_handler, ((const char *)zk_path),  hashslot_get_watch, ctx_temp, data, &datalen);
             if (get_ret) {
                 pool->hashslot[slot_index].index = server_index;
+                log_warn("zookeeper handle error %d, server_index:%u, slot_index:%u", get_ret, server_index, slot_index);
             } else {
                 json_object *json_data = json_tokener_parse(data);
                 int node_index;
                 JSON_GET_INT32(json_data, "node_index", &node_index, 0);
                 json_object_put(json_data);
                 pool->hashslot[slot_index].index = node_index;
+                log_debug(LOG_DEBUG, "zookeeper handle ok, slot_index:%u, node_index:%d", slot_index, node_index);
             }
         } else {
             pool->hashslot[slot_index].index = server_index;
@@ -130,9 +134,13 @@ rstatus_t
 hashslot_update(struct server_pool *pool)
 {
     uint32_t nserver;             /* # server - live and dead */
+    uint32_t pointer_per_server;  /* pointers per server proportional to weight */
+    uint32_t pointer_counter;     /* # pointers on continuum */
     uint32_t nlive_server;        /* # live server */
     uint32_t server_index;        /* server index */
+    uint32_t continuum_index;     /* continuum index */
     uint32_t slot_index;          /* slot index */
+    uint32_t weight_index;        /* weight index */
     uint32_t total_weight;        /* total live server weight */
     uint32_t server_slot_per_num; /* server have slot number 8*/
     int64_t now;                  /* current timestamp in usec */
@@ -149,47 +157,56 @@ hashslot_update(struct server_pool *pool)
     total_weight = 0;
     pool->next_rebuild = 0LL;
 
-    struct String_vector strings;
-    int child_ret = zk_get_children(pool->zh_handler, "/nodes", NULL, NULL, &strings);
-    if (child_ret) {
-        return NC_ERROR;
-    } else {
-        qsort(strings.data, (size_t)strings.count, sizeof(char *), comp);
-    }
-    char zk_path[50];
-    char back_ip_str[128], server_ip_str[128];
-    char zk_set_str[256];
+//    struct String_vector strings;
+//    int child_ret = zk_get_children(pool->zh_handler, "/nodes", NULL, NULL, &strings);
+//    if (child_ret) {
+//        return NC_ERROR;
+//    } else {
+//        qsort(strings.data, (size_t)strings.count, sizeof(char *), comp);
+//    }
+//    char zk_path[50];
+//    char back_ip_str[128], server_ip_str[128];
+//    char zk_set_str[256];
     for (server_index = 0; server_index < nserver; server_index++) {
         server = array_get(&pool->server, server_index);
-        if(server->next_retry > now) {
-            backup_server = array_get(&pool->backup_server, server_index);
-            memcpy(&tmp_server, backup_server, sizeof(struct server));
-            memcpy(backup_server, server, sizeof(struct server));
-            memcpy(server, &tmp_server, sizeof(struct server));
-            
-            struct string back_ip, server_ip;
-            uint16_t back_port, server_port;
-            back_ip = backup_server->addrstr;
-            server_ip = server->addrstr;
-            back_port = backup_server->port;
-            server_port = server->port;
-            memset(back_ip_str, 0, sizeof(back_ip_str));
-            memset(server_ip_str, 0, sizeof(server_ip_str));
-            strncpy(back_ip_str, back_ip.data, back_ip.len);
-            strncpy(server_ip_str, server_ip.data, server_ip.len);
-            memset(zk_set_str, 0, sizeof(zk_set_str));
-            memset(zk_path, 0, sizeof(zk_path));
-            sprintf(zk_set_str, "{\"status\":0,\"ip\":\"%s\",\"port\":%d,\"slave_ip\":\"%s\",\"slave_port\":%d}", server_ip_str, server_port, back_ip_str, back_port);
-            sprintf(zk_path, "/nodes/%s", strings.data[server_index]);
-            int set_ret = zk_set(pool->zh_handler, zk_path, zk_set_str);
-            if (set_ret) {
-                return NC_ERROR;
-            }
-
-            log_warn("switch between master and slave machines, now master:pool "
-                    "%"PRIu32" '%.*s' server address:%.*s",pool->idx,
-                    pool->name.len, pool->name.data, server->addrstr.len, server->addrstr.data);
-        }
+//        if(server->next_retry > now) {
+//            backup_server = array_get(&pool->backup_server, server_index);
+//            memcpy(&tmp_server, backup_server, sizeof(struct server));
+//            memcpy(backup_server, server, sizeof(struct server));
+//            memcpy(server, &tmp_server, sizeof(struct server));
+//
+//            if(pool->ssdb_handle) {
+//                lib_ssdb_active_standby_switch_t active_standby_switch = (lib_ssdb_active_standby_switch_t)dlsym(pool->ssdb_handle, "active_standby_switch");
+//                int err_no = active_standby_switch((const char*)server->addrstr.data, server->port, &pool->last_seq);
+//                log_warn("switch between master and slave machines, error_code %d, now master:pool "
+//                        "%"PRIu32" '%.*s' server address:%.*s:%u",err_no, pool->idx,
+//                        pool->name.len, pool->name.data, server->addrstr.len, server->addrstr.data, server->port);
+//
+//            }else{
+//                log_warn("ssdb handle is NULL");
+//                return NC_ERROR;
+//            }
+//
+//
+//            struct string back_ip, server_ip;
+//            uint16_t back_port, server_port;
+//            back_ip = backup_server->addrstr;
+//            server_ip = server->addrstr;
+//            back_port = backup_server->port;
+//            server_port = server->port;
+//            memset(back_ip_str, 0, sizeof(back_ip_str));
+//            memset(server_ip_str, 0, sizeof(server_ip_str));
+//            strncpy(back_ip_str, back_ip.data, back_ip.len);
+//            strncpy(server_ip_str, server_ip.data, server_ip.len);
+//            memset(zk_set_str, 0, sizeof(zk_set_str));
+//            memset(zk_path, 0, sizeof(zk_path));
+//            sprintf(zk_set_str, "{\"status\":0,\"ip\":\"%s\",\"port\":%d,\"slave_ip\":\"%s\",\"slave_port\":%d}", server_ip_str, server_port, back_ip_str, back_port);
+//            sprintf(zk_path, "/nodes/%s", strings.data[server_index]);
+//            int set_ret = zk_set(pool->zh_handler, zk_path, zk_set_str);
+//            if (set_ret) {
+//                return NC_ERROR;
+//            }
+//        }
 
         if (pool->auto_eject_hosts) {
             if (server->next_retry <= now) {
@@ -211,10 +228,25 @@ hashslot_update(struct server_pool *pool)
         }
     }
 
+    continuum_index = 0;
+    pointer_counter = 0;
+    for (server_index = 0; server_index < nserver; server_index++) {
+        struct server *server = array_get(&pool->server, server_index);
+        if (pool->auto_eject_hosts && server->next_retry > now) {
+            continue;
+        }
+
+        for (weight_index = 0; weight_index < server->weight; weight_index++) {
+            pointer_per_server = 1;
+            pointer_counter += pointer_per_server;
+        }
+    }
+
     pool->nlive_server = nlive_server;
+    pool->ncontinuum   = pointer_counter;
 
     if (nlive_server == 0) {
-        ASSERT(pool->continuum != NULL);
+        ASSERT(pool->hashslot != NULL);
         ASSERT(pool->ncontinuum != 0);
 
         log_debug(LOG_DEBUG, "no live servers for pool %"PRIu32" '%.*s'",

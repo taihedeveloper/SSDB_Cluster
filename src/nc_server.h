@@ -144,12 +144,15 @@ struct server_pool {
     unsigned           require_auth;         /* require_auth? */
     unsigned           auto_eject_hosts:1;   /* auto_eject_hosts? */
     unsigned           preconnect:1;         /* preconnect? */
+    unsigned           master:1;             /* master? */
     unsigned           tcpkeepalive:1;       /* tcpkeepalive? */
     unsigned           finish_init:1;        /* finish init */
     struct array       ctx_array;            /* slot_ctx */
     zhandle_t          *zh_handler;          /* zookeeper handler */
     struct array       server_identifier;     /* server_identified */
     struct zk_init_ctx *init_ctx;            /* zookeeper init watcher ctx*/
+    void               *ssdb_handle;          /*ssdb handle*/
+    uint64_t           last_seq;
 };
 
 void server_ref(struct conn *conn, void *owner);
@@ -166,6 +169,7 @@ rstatus_t server_update_index(struct array *ar , uint32_t index);
 void server_deinit(struct array *server);
 struct conn *server_conn(struct server *server);
 rstatus_t server_connect(struct context *ctx, struct server *server, struct conn *conn);
+rstatus_t server_connect_determine(struct context *ctx, struct server *server, struct conn *conn);
 void server_close(struct context *ctx, struct conn *conn);
 void server_connected(struct context *ctx, struct conn *conn);
 void server_ok(struct context *ctx, struct conn *conn);
@@ -178,5 +182,6 @@ void server_pool_disconnect(struct context *ctx);
 rstatus_t server_pool_connected_determine(struct context *ctx);
 rstatus_t server_pool_init(struct array *server_pool, struct array *conf_pool, struct context *ctx);
 void server_pool_deinit(struct array *server_pool);
+rstatus_t server_active_standby_switch(struct server *server);
 
 #endif
