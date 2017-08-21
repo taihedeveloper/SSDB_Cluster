@@ -993,7 +993,7 @@ int Slave::proc_z_clear(const LogEvent &event) {
 		ZIterator *it = serv->ssdb->zrange(key, offset, limit, version);
 		int num = 0;
 		while (it->next()) {
-			ret = serv->ssdb->zdel(key, it->key, trans, version);
+			ret = serv->ssdb->zdel(key, it->field, trans, version);
 			if (ret < 0) {
 				log_error("zclear zdel failed, type=%" PRId8 " seq=%" PRIu64, event.type(), event.seq());
 				num = 0;
